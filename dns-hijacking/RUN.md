@@ -1,154 +1,192 @@
-# Attack 2 — DNS Hijacking via ONOS OpenFlow rules
+# Attack 2 — DNS Hijacking via ONOS OpenFlow Rules
 
-**SDN trust model targeted:** the control plane's *programmability*. Instead of
-racing spoofed DNS replies on the LAN, we make the **controller (ONOS)** install
-OpenFlow rules that steer the victim's DNS traffic (UDP/53) to an
-attacker-controlled resolver, and silently rewrite the reply so the victim
-accepts it.
+## Overview
+
+This attack targets the control plane's programmability. Rather than racing
+spoofed DNS replies on the LAN, the controller (ONOS) is driven to install
+OpenFlow rules on the victim's switch that steer the victim's DNS traffic
+(UDP/53) to an attacker-controlled resolver, and rewrite the reply so the
+victim accepts it as legitimate.
 
 ```
- h1 (victim 10.0.10.11) ---\
- h2            10.0.10.12 ---+-- s1 --- r1 --- s3 --- srv (legit DNS 10.0.30.10)
- h3 (attacker 10.0.10.13) --/        (ONOS controller @ 127.0.0.1:6653)
+ h1 (victim   10.0.10.11) --\
+ h2           10.0.10.12 ----+-- s1 --- r1 --- s3 --- srv (legit DNS 10.0.30.10)
+ h3 (attacker 10.0.10.13) --/        ONOS controller @ 127.0.0.1:6653
 
- Normal : h1 asks srv  -> www.lab.example = 10.0.30.80  (real)
- Attack : ONOS flow on s1 steers h1's UDP/53 to h3 -> www.lab.example = 10.6.6.66 (attacker)
+ Normal : h1 queries srv  ->  www.lab.example = 10.0.30.80   (real)
+ Attack : an ONOS flow on s1 steers h1's UDP/53 to h3
+                            ->  www.lab.example = 10.6.6.66   (attacker)
 ```
 
 ## Files
-| File | What it is |
-|------|------------|
-| `scripts/setup_codespace.sh` | installs Mininet/OVS/dnsmasq + starts ONOS in Docker |
-| `scripts/dns_topo_codespace.py` | the Mininet topology (userspace OVS, for Codespaces) |
-| `scripts/dnsmasq-legit.conf` | the real resolver config (runs on `srv`) |
-| `scripts/dnsmasq-rogue.conf` | the attacker's resolver config (runs on `h3`) |
-| `scripts/push_dns_hijack.py` | **the attack** — installs the OpenFlow redirect rules via ONOS REST |
-| `scripts/remove_dns_hijack.py` | removes those rules (clean teardown) |
 
-> On a real Linux VM (not a container) you can use the team's
-> `../dns_topo.py` instead of `dns_topo_codespace.py`.
+| File | Purpose |
+|------|---------|
+| `scripts/dns_topo_userspace.py` | Mininet topology (userspace OVS datapath) |
+| `scripts/dnsmasq-legit.conf` | legitimate resolver config (host `srv`) |
+| `scripts/dnsmasq-rogue.conf` | attacker resolver config (host `h3`) |
+| `scripts/push_dns_hijack.py` | installs the OpenFlow redirect rules via the ONOS REST API |
+| `scripts/remove_dns_hijack.py` | removes the rules |
+
+On a host that provides the OVS kernel datapath, the project topology
+`dns_topo.py` may be used in place of `dns_topo_userspace.py`.
 
 ---
 
-## 0. One-time setup (in the Codespace)
+## Environment
+
+Required packages: Mininet, Open vSwitch, dnsmasq, dnsutils, tcpdump, iperf3,
+Python 3. ONOS 2.7 is run as a controller and reached over its REST API
+(`onos:rocks`, port 8181) and OpenFlow (port 6653).
+
+Install packages and start Open vSwitch:
+
 ```bash
-cd dns-hijacking/scripts
-sudo bash setup_codespace.sh
-```
-Wait ~60–90 s for ONOS to boot, then activate its apps and confirm it answers:
-```bash
-curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.openflow/active
-curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.fwd/active
-curl -u onos:rocks http://localhost:8181/onos/v1/devices        # should return JSON
+sudo apt-get update
+sudo apt-get install -y mininet openvswitch-switch openvswitch-common \
+    dnsmasq dnsutils tcpdump iperf3 python3 curl
+sudo service openvswitch-switch start
+sudo systemctl disable --now dnsmasq   # free port 53; dnsmasq is launched per host
 ```
 
-## 1. Start the testbed
-**Terminal A** (keep it open — this is the Mininet CLI):
+Start ONOS and activate the OpenFlow provider and reactive forwarding:
+
+```bash
+docker run -d --name onos -p 8181:8181 -p 8101:8101 -p 6653:6653 -p 6640:6640 \
+    onosproject/onos:2.7.0
+# allow ~60-90s for ONOS to boot, then:
+curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.openflow/active
+curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.fwd/active
+curl -u onos:rocks http://localhost:8181/onos/v1/devices        # returns JSON when ready
+```
+
+---
+
+## Procedure
+
+### Step 1 — Start the testbed
+
 ```bash
 cd dns-hijacking/scripts
-sudo python3 dns_topo_codespace.py
+sudo python3 dns_topo_userspace.py
 ```
-At the `mininet>` prompt, let ONOS learn every host:
+
+At the `mininet>` prompt, generate traffic so ONOS learns every host:
+
 ```
 mininet> pingall
 ```
-(You should see 0% dropped once the router is up.)
 
-## 2. Start the two DNS resolvers
-Open an **xterm** for the server and the attacker from the Mininet CLI:
+A 0% drop rate confirms the topology and router are up.
+
+### Step 2 — Start the two resolvers
+
+Open terminals for the server and attacker hosts:
+
 ```
 mininet> xterm srv h3
 ```
-In the **srv** window (legit resolver):
-```bash
-dnsmasq --conf-file=/absolute/path/to/dns-hijacking/scripts/dnsmasq-legit.conf -d
-```
-In the **h3** window (rogue resolver — leave it running, you'll watch it log hijacked queries):
-```bash
-dnsmasq --conf-file=/absolute/path/to/dns-hijacking/scripts/dnsmasq-rogue.conf -d
-```
-> `-d` keeps dnsmasq in the foreground so you can see `query[A] www.lab.example`
-> lines appear the moment the hijack works.
-> Tip: run `pwd` in the scripts folder to get the absolute path for `--conf-file`.
 
-## 3. Baseline (BEFORE the attack) — prove the honest answer
-In the Mininet CLI:
+On `srv` (legitimate resolver), using the absolute path to the config:
+
+```bash
+dnsmasq --conf-file=$(pwd)/dnsmasq-legit.conf -d
+```
+
+On `h3` (rogue resolver), left running in the foreground to log hijacked queries:
+
+```bash
+dnsmasq --conf-file=$(pwd)/dnsmasq-rogue.conf -d
+```
+
+### Step 3 — Baseline measurement (attack off)
+
 ```
 mininet> h1 dig +short @10.0.30.10 www.lab.example
 10.0.30.80
 ```
-`10.0.30.80` = the real answer. Good baseline.
 
-## 4. Launch the attack — install the OpenFlow redirect rules
-In **Terminal B** (not the Mininet CLI):
+`10.0.30.80` is the legitimate answer and establishes the baseline.
+
+### Step 4 — Install the redirect rules
+
+In a separate terminal:
+
 ```bash
 cd dns-hijacking/scripts
-python3 push_dns_hijack.py            # add --dry-run first to preview the flows
+python3 push_dns_hijack.py            # --dry-run prints the flows without installing
 ```
-It auto-discovers s1, the ports and the attacker MAC from ONOS, then installs
-two flows (outbound hijack + return rewrite).
 
-## 5. Prove the hijack (AFTER the attack)
-Same query as the baseline — the victim still *thinks* it's asking the real
-resolver (`@10.0.30.10`):
+The switch, ports and attacker MAC are read from the ONOS host database, and two
+flows are installed on s1: an outbound hijack (victim → real resolver is
+redirected to the attacker) and a return rewrite (the attacker's reply is
+re-sourced as the real resolver).
+
+### Step 5 — Post-attack measurement (attack on)
+
+The victim issues the same query to the same resolver address:
+
 ```
 mininet> h1 dig +short @10.0.30.10 www.lab.example
 10.6.6.66
 ```
-`10.6.6.66` = the **attacker's** answer. The victim was hijacked without
-touching the victim at all. You'll also see the query appear in the **h3**
-dnsmasq window. **Screenshot both the baseline and this — that's your proof.**
 
-Confirm the flows live in the controller:
+`10.6.6.66` is the attacker-chosen answer. The query also appears in the `h3`
+dnsmasq log. The change from `10.0.30.80` to `10.6.6.66`, with no change on the
+victim, is the evidence of a successful hijack.
+
+The corrupted flows can be confirmed in the controller:
+
 ```bash
 curl -u onos:rocks http://localhost:8181/onos/v1/flows/application/org.sdnproject.dnshijack
 ```
 
-## 6. Teardown
+### Step 6 — Teardown
+
 ```bash
-python3 remove_dns_hijack.py          # remove the hijack flows
-mininet> h1 dig +short @10.0.30.10 www.lab.example   # back to 10.0.30.80
+python3 remove_dns_hijack.py
+mininet> h1 dig +short @10.0.30.10 www.lab.example   # returns 10.0.30.80 again
+mininet> exit
+sudo mn -c
 ```
-Exit Mininet with `exit`, then `sudo mn -c` to clean up.
 
 ---
 
-## 7. Measurements (for the report — matches the proposal's metrics)
+## Evaluation
+
+Metrics are recorded twice — attack off (baseline) and attack on — for a direct
+comparison.
 
 **How easy to conduct**
-- *Attacker prerequisites:* a host on the LAN + REST access to ONOS (onos:rocks).
-- *Time to compromise:* time `push_dns_hijack.py` — e.g. `time python3 push_dns_hijack.py`.
-- *Success rate:* run the step-5 `dig` 20× in a loop; count how many return `10.6.6.66`.
+- Attacker prerequisites: a host on the LAN and REST access to the controller.
+- Time to compromise: `time python3 push_dns_hijack.py`.
+- Success rate: 20 repeated queries, counting attacker answers:
   ```
   mininet> h1 bash -c 'for i in $(seq 20); do dig +short @10.0.30.10 www.lab.example; done'
   ```
 
 **What it targets**
-- *SDN component abused:* control-plane flow table on s1.
-- *Control-plane corruption:* show the false flows and how long they persist:
+- SDN component abused: the control-plane flow table on s1.
+- Control-plane corruption: the false flows and their persistence:
   ```
   curl -u onos:rocks http://localhost:8181/onos/v1/flows/application/org.sdnproject.dnshijack
   ```
 
 **Consequences**
-- *Interception completeness:* fraction of the victim's DNS answers that are the
+- Interception completeness: fraction of the victim's DNS answers that are the
   attacker's IP (from the loop above).
-- *Latency impact:* `mininet> h1 ping -c 20 10.0.30.10` with vs. without the flows.
-- *Throughput impact:* `iperf3` between two hosts, attack on vs. off.
-- *Controller cost:* watch Packet-In rate / CPU in the ONOS container
-  (`docker stats onos`) during the attack.
-
-Record each metric twice (attack OFF = baseline, attack ON) so the before/after
-comparison is clean.
+- Latency impact: `h1 ping -c 20 10.0.30.10`, attack off vs. on.
+- Throughput impact: `iperf3` between two hosts, attack off vs. on.
+- Controller cost: Packet-In rate and CPU during the attack (`docker stats onos`).
 
 ---
 
-## Troubleshooting
-- **`push_dns_hijack.py` says host not found** → run `pingall` again; ONOS only
-  learns hosts after they send traffic.
-- **`dig` still returns the real IP after attack** → check the flows installed
-  (step 5 curl), and that you ran `pingall` so ONOS knows h3's port.
-- **Mininet fails to start switches** → you're on the kernel datapath; this
-  Codespace file already forces userspace. Run `sudo mn -c` and retry.
-- **dnsmasq: "address already in use"** → the system dnsmasq is still running:
-  `sudo systemctl stop dnsmasq`.
+## Notes
+
+- `push_dns_hijack.py` reports "host not found" until each host has sent traffic;
+  `pingall` resolves this.
+- dnsmasq requires an absolute `--conf-file` path (`$(pwd)/...`).
+- "address already in use" from dnsmasq indicates the system dnsmasq is still
+  running on port 53; stop it with `sudo systemctl stop dnsmasq`.
+- A switch start-up failure on the kernel datapath is cleared with `sudo mn -c`;
+  `dns_topo_userspace.py` forces the userspace datapath.

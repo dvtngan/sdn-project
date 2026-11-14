@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Codespaces / container-friendly version of the team topology
-(../dns_topo.py). Identical addressing, but it forces Open vSwitch into
-USERSPACE datapath mode, because a GitHub Codespace container has no OVS
-kernel module. On a real Linux VM you can just run ../dns_topo.py instead.
+Userspace-datapath version of the project topology (../dns_topo.py).
+Identical addressing, but Open vSwitch is forced into USERSPACE datapath
+mode so the topology runs in environments without the OVS kernel module
+(e.g. containers). On a host with the kernel datapath, ../dns_topo.py works.
 
-Topology (same as the team's dns_topo.py):
+Topology:
   LAN A  10.0.10.0/24 : h1(.11)  h2(.12)  h3(.13 = attacker)
   LAN B  10.0.20.0/24 : h4(.11)  h5(.12)
   SrvLAN 10.0.30.0/24 : srv(.10 = legit DNS)
