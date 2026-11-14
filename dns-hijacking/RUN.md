@@ -81,22 +81,20 @@ A 0% drop rate confirms the topology and router are up.
 
 ### Step 2 — Start the two resolvers
 
-Open terminals for the server and attacker hosts:
+The resolvers are launched directly from the Mininet CLI as background
+daemons (no graphical terminal required). `$PWD` resolves to the `scripts`
+directory the topology was started from:
 
 ```
-mininet> xterm srv h3
+mininet> srv dnsmasq --conf-file=$PWD/dnsmasq-legit.conf
+mininet> h3 dnsmasq --conf-file=$PWD/dnsmasq-rogue.conf
 ```
 
-On `srv` (legitimate resolver), using the absolute path to the config:
+Confirm both are listening:
 
-```bash
-dnsmasq --conf-file=$(pwd)/dnsmasq-legit.conf -d
 ```
-
-On `h3` (rogue resolver), left running in the foreground to log hijacked queries:
-
-```bash
-dnsmasq --conf-file=$(pwd)/dnsmasq-rogue.conf -d
+mininet> srv ss -lunp | grep :53
+mininet> h3 ss -lunp | grep :53
 ```
 
 ### Step 3 — Baseline measurement (attack off)
@@ -110,7 +108,7 @@ mininet> h1 dig +short @10.0.30.10 www.lab.example
 
 ### Step 4 — Install the redirect rules
 
-In a separate terminal:
+In a second terminal (the Mininet CLI keeps running in the first):
 
 ```bash
 cd dns-hijacking/scripts
