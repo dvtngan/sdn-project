@@ -38,7 +38,10 @@ def run():
     setLogLevel('info')
 
     # datapath='user' => OVS userspace forwarding (works in containers).
-    UserSwitch = partial(OVSSwitch, datapath='user')
+    # protocols='OpenFlow13' => ONOS 2.7 requires OF1.3; without this the
+    # switch offers OF1.0, the handshake fails, and ONOS logs DPID[?] /
+    # "no dpid registered" and registers no device.
+    UserSwitch = partial(OVSSwitch, datapath='user', protocols='OpenFlow13')
 
     net = Mininet(controller=None, switch=UserSwitch,
                   link=TCLink, autoSetMacs=True)
