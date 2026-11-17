@@ -20,10 +20,11 @@ class Router(Node):
 
 class HlhTopo(Topo):
     def build(self):
-        # switches
-        s1 = self.addSwitch('s1')   # LAN A (victim side)
-        s2 = self.addSwitch('s2')   # LAN B
-        s3 = self.addSwitch('s3')   # server LAN (attacker + server)
+        # switches - pinned to OpenFlow 1.3 (ONOS<->OVS fail to negotiate 1.5:
+        # meter-features reply length mismatch breaks the switch connection)
+        s1 = self.addSwitch('s1', protocols='OpenFlow13')   # LAN A (victim side)
+        s2 = self.addSwitch('s2', protocols='OpenFlow13')   # LAN B
+        s3 = self.addSwitch('s3', protocols='OpenFlow13')   # server LAN (attacker + server)
 
         # router (IPs set after start)
         r1 = self.addHost('r1', ip='0.0.0.0')
@@ -48,7 +49,7 @@ class HlhTopo(Topo):
         self.addLink(srv, s3)
         self.addLink(atk, s3)
 
-        # router <-> switches 
+        # router <-> switches
         self.addLink(r1, s1)   # r1-eth0 -> LAN A
         self.addLink(r1, s2)   # r1-eth1 -> LAN B
         self.addLink(r1, s3)   # r1-eth2 -> server LAN
