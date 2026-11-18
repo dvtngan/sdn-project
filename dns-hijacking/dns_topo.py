@@ -8,7 +8,7 @@ Codespace / unprivileged container -- there the OVS datapath cannot forward
 packets (datapath upcalls are lost) and pingall drops 100%.
 
 Topology:
-  LAN A  10.0.10.0/24 : h1(.11 victim)  h2(.12)  h3(.13 attacker / rogue DNS)
+  LAN A  10.0.10.0/24 : h1(.11 victim)  h2(.12)  h3(.13 attacker / DNS proxy)
   LAN B  10.0.20.0/24 : h4(.11)  h5(.12)
   SrvLAN 10.0.30.0/24 : srv(.10 legit DNS)
   Router r1 : 10.0.10.1 / 10.0.20.1 / 10.0.30.1
@@ -69,7 +69,7 @@ def run():
 
     r1 = net.addHost('r1', cls=Router, ip='0.0.0.0')
 
-    # LAN A (h3 is the attacker / rogue resolver)
+    # LAN A (h3 is the attacker / MITM DNS proxy)
     h1 = net.addHost('h1', ip='10.0.10.11/24', defaultRoute='via 10.0.10.1')
     h2 = net.addHost('h2', ip='10.0.10.12/24', defaultRoute='via 10.0.10.1')
     h3 = net.addHost('h3', ip='10.0.10.13/24', defaultRoute='via 10.0.10.1')

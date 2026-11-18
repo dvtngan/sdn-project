@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# Attack 2 -- DNS hijacking via OpenFlow rule insertion.
+# Attack 2 -- DNS man-in-the-middle via OpenFlow rule insertion (standalone
+# fallback for the ONOS push_dns_hijack.py; same flows, no controller).
 #
 # Installs two high-priority OpenFlow 1.3 flows on switch s1 using ovs-ofctl:
 #
 #   FORWARD : the victim's DNS query (UDP/53) to the legit resolver is steered
-#             to the attacker host h3 (dst IP + dst MAC rewritten to h3).
+#             to the attacker host h3 (dst IP + dst MAC rewritten to h3), where
+#             the DNS proxy forwards it to the real server and relays the answer.
 #   RETURN  : h3's reply is re-sourced as the legit resolver (src IP rewritten
 #             back to 10.0.30.10) so the victim accepts it transparently.
 #
@@ -44,7 +46,7 @@ echo "Switch        : ${SW}"
 echo "Victim  h1    : ${VICTIM_IP}  (s1 port ${P_H1})"
 echo "Attacker h3   : ${ROGUE_IP}   (s1 port ${P_H3}, MAC ${H3_MAC})"
 echo "Legit resolver: ${LEGIT_DNS}  -> real answer ${LEGIT_ANSWER}"
-echo "Rogue answer  : ${ROGUE_ANSWER}"
+echo "Attacker answer: ${ROGUE_ANSWER}  (tampered record)"
 echo
 echo "FORWARD flow: ${FORWARD}"
 echo "RETURN  flow: ${RETURN}"

@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
-DNS HIJACK via ONOS OpenFlow rules  (Attack 2, SDN / control-plane method).
+DNS MAN-IN-THE-MIDDLE via ONOS OpenFlow rules  (Attack 2, SDN / control-plane).
 
 This is the SDN-specific core of the attack: instead of racing spoofed DNS
 replies on the LAN, we tell the CONTROLLER (ONOS) to install OpenFlow 1.3
 flow rules on the victim's switch that STEER the victim's DNS traffic
-(UDP/53) to the attacker's rogue resolver, and quietly rewrite the reply so
-the victim never notices.
+(UDP/53) through the attacker, and quietly rewrite the reply so the victim
+never notices. The attacker runs a DNS proxy (dnsmasq-proxy.conf) that
+forwards each query to the REAL resolver and relays the genuine answer back
+(optionally altering a chosen record) -- a true man-in-the-middle, not a
+redirect, because the real server stays in the loop.
 
 It installs TWO rules on the victim's switch (s1):
 
-  1) OUTBOUND hijack  (victim -> real resolver, UDP dst 53)
+  1) OUTBOUND steer  (victim -> real resolver, UDP dst 53)
        match : ip_src=VICTIM, ip_dst=REAL_RESOLVER, udp_dst=53
        action: set eth_dst=ATTACKER_MAC, set ip_dst=ATTACKER_IP,
                output -> attacker port
-     => the query is delivered to the rogue resolver instead.
+     => the query is delivered to the attacker's proxy instead.
 
   2) RETURN rewrite   (attacker -> victim, UDP src 53)
        match : ip_src=ATTACKER, ip_dst=VICTIM, udp_src=53
        action: set ip_src=REAL_RESOLVER, output -> victim port
-     => the forged reply looks like it came from the real resolver, so the
+     => the relayed reply looks like it came from the real resolver, so the
         victim's OS accepts it.
 
 Switch id, ports and the attacker MAC are discovered automatically from
