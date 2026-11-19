@@ -90,19 +90,42 @@ sudo docker run --rm hello-world               # "Hello from Docker!" if working
 
 ## Procedure
 
-### Step 1 — Start ONOS
+> **You will use two terminals** (both in WSL/Ubuntu):
+> - **Terminal A** runs Mininet. Once you start it (Step 2) its prompt becomes
+>   `mininet>` and it stays open the whole time — every `mininet>` line below is typed here.
+> - **Terminal B** is a normal shell (`$`). Every `curl`, `python3`, `docker` and
+>   `ovs-ofctl` line below is typed here, while Terminal A keeps running.
+
+### Step 0 — Get the code
+
+If you don't already have the repo, clone it and switch to the `dns-hijacking` branch:
+
+```bash
+git clone https://github.com/dvtngan/sdn-project.git ~/sdn-project
+cd ~/sdn-project && git checkout dns-hijacking
+cd dns-hijacking        # all paths below are relative to here
+```
+
+### Step 1 — Start ONOS  *(Terminal B)*
 
 ```bash
 sudo docker run -d --name onos \
   -p 8181:8181 -p 8101:8101 -p 6653:6653 -p 6640:6640 \
   onosproject/onos:2.7.0
 sleep 90     # ONOS takes ~60-90s to boot
-
+```
+Check ONOS is actually up before continuing (repeat until it returns `[]` or a JSON
+list, not "connection refused"):
+```bash
+curl -u onos:rocks http://localhost:8181/onos/v1/devices
+```
+Then activate the two apps the attack needs:
+```bash
 curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.openflow/active
 curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.fwd/active
 ```
 
-### Step 2 — Start the testbed
+### Step 2 — Start the testbed  *(Terminal A)*
 
 ```bash
 cd ~/sdn-project/dns-hijacking
@@ -112,13 +135,13 @@ sudo python3 dns_topo.py        # banner: "controller: ONOS @ 127.0.0.1:6653"
 mininet> pingall
 *** Results: 0% dropped (42/42 received)
 ```
-Confirm ONOS registered the switches:
+Confirm ONOS registered the switches *(Terminal B)*:
 ```bash
 curl -u onos:rocks http://localhost:8181/onos/v1/devices | python3 -m json.tool
 # s1, s2, s3 with "protocol": "OF_13", "available": true
 ```
 
-### Step 3 — Start both resolvers
+### Step 3 — Start both resolvers  *(Terminal A)*
 
 ```
 mininet> srv dnsmasq --conf-file=$PWD/scripts/dnsmasq-legit.conf
@@ -128,7 +151,7 @@ mininet> h3  ss -lunp | grep :53
 ```
 `srv` is the **real** resolver; `h3` is the attacker's **proxy** (forwards to srv).
 
-### Step 4 — Baseline (attack OFF)
+### Step 4 — Baseline (attack OFF)  *(Terminal A)*
 
 ```
 mininet> h1 dig +short @10.0.30.10 www.lab.example
@@ -138,17 +161,20 @@ mininet> h1 dig +short @10.0.30.10 intranet.lab.example
 ```
 Both honest answers come straight from the real server — the baseline.
 
-### Step 5 — Install the MITM flows (attack ON)
+### Step 5 — Install the MITM flows (attack ON)  *(Terminal B)*
 
-Second terminal (the Mininet CLI stays open):
+Terminal A keeps the Mininet CLI open; run this in Terminal B:
 ```bash
 cd ~/sdn-project/dns-hijacking/scripts
 python3 push_dns_hijack.py --dry-run     # verify host discovery from ONOS
-python3 push_dns_hijack.py               # install via the ONOS REST API
+time python3 push_dns_hijack.py          # install via the ONOS REST API (times the attack)
 ```
-Both flows should return `HTTP 201`. (Discovery needs `pingall` from Step 2.)
+Both flows should return `HTTP 201`. (Discovery needs `pingall` from Step 2.) The
+`time` line gives the "time taken for attack" metric (~0.09 s).
 
 ### Step 6 — Confirm the man-in-the-middle
+
+Parts (a) and (b) are `mininet>` lines in **Terminal A**; part (c) is **Terminal B**.
 
 **(a) The attacker relays the real answer** — proof the real server is still in
 the loop:
@@ -175,7 +201,7 @@ mininet> h1 dig +short @10.0.30.10 www.lab.example
 by the attacker locally and **never reached the real server** (it will not appear
 in `srv`'s log) — the contrast with (a) is the point.
 
-**(c) Control-plane evidence** — ONOS owns the flows and they are live:
+**(c) Control-plane evidence** *(Terminal B)* — ONOS owns the flows and they are live:
 ```bash
 curl -u onos:rocks "http://localhost:8181/onos/v1/flows/application/org.sdnproject.dnshijack" | python3 -m json.tool
 sudo ovs-ofctl -O OpenFlow13 dump-flows s1 | grep -E 'tp_dst=53|tp_src=53'
@@ -183,14 +209,17 @@ sudo ovs-ofctl -O OpenFlow13 dump-flows s1 | grep -E 'tp_dst=53|tp_src=53'
 
 ### Step 7 — Teardown
 
+Remove the flows *(Terminal B)*:
 ```bash
 python3 remove_dns_hijack.py
 ```
+Confirm resolution is back to normal *(Terminal A)*, then leave Mininet:
 ```
 mininet> h1 dig +short @10.0.30.10 www.lab.example       # 10.0.30.80 again
 mininet> h1 dig +short @10.0.30.10 intranet.lab.example  # 10.0.30.90
 mininet> exit
 ```
+Clean up *(Terminal B)*:
 ```bash
 sudo mn -c
 sudo docker rm -f onos
