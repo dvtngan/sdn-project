@@ -1,7 +1,36 @@
 #!/usr/bin/env python3
-from mininet.topo import Topo
+"""
+DNS-hijacking testbed topology (Attack 2).
+
+Runs on a real Linux kernel (the official Mininet VM, or any Ubuntu VM with
+Open vSwitch) using the OVS KERNEL datapath. Do NOT run this inside a GitHub
+Codespace / unprivileged container -- there the OVS datapath cannot forward
+packets (datapath upcalls are lost) and pingall drops 100%.
+
+Topology:
+  LAN A  10.0.10.0/24 : h1(.11 victim)  h2(.12)  h3(.13 attacker / DNS proxy)
+  LAN B  10.0.20.0/24 : h4(.11)  h5(.12)
+  SrvLAN 10.0.30.0/24 : srv(.10 legit DNS)
+  Router r1 : 10.0.10.1 / 10.0.20.1 / 10.0.30.1
+  Controller: ONOS (RemoteController 127.0.0.1:6653)  [M1 testbed]
+
+Switch s1 port layout (fixed by link order, used by the hijack flows):
+  s1-eth1 = h1   s1-eth2 = h2   s1-eth3 = h3(attacker)   s1-eth4 = r1
+
+Controller mode:
+  Default           -> connects to ONOS at 127.0.0.1:6653 (OpenFlow 1.3).
+  DNS_STANDALONE=1  -> no controller; switches run as standalone L2 learning
+                       switches. Use this to demo the attack if ONOS is not up.
+                       The hijack method (ovs-ofctl flows) is identical either way.
+
+On startup this script prints, and writes to /tmp/dns_hijack_env.sh, the exact
+switch / port / MAC values the attack script needs -- so you never hand-copy them.
+"""
+import os
+from functools import partial
+
 from mininet.net import Mininet
-from mininet.node import RemoteController, Node
+from mininet.node import RemoteController, Node, OVSSwitch
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
@@ -17,66 +46,91 @@ class Router(Node):
         super().terminate()
 
 
-class DnsTopo(Topo):
-    def build(self):
-        # switches
-        s1 = self.addSwitch('s1')   # LAN A
-        s2 = self.addSwitch('s2')   # LAN B
-        s3 = self.addSwitch('s3')   # server LAN
-
-        # router (IPs set after start)
-        r1 = self.addHost('r1', ip='0.0.0.0')
-
-        # LAN A hosts
-        h1 = self.addHost('h1', ip='10.0.10.11/24')
-        h2 = self.addHost('h2', ip='10.0.10.12/24')
-        h3 = self.addHost('h3', ip='10.0.10.13/24')
-        # LAN B hosts
-        h4 = self.addHost('h4', ip='10.0.20.11/24')
-        h5 = self.addHost('h5', ip='10.0.20.12/24')
-        # server LAN
-        srv = self.addHost('srv', ip='10.0.30.10/24')
-
-        # hosts <-> switches
-        self.addLink(h1, s1)
-        self.addLink(h2, s1)
-        self.addLink(h3, s1)
-        self.addLink(h4, s2)
-        self.addLink(h5, s2)
-        self.addLink(srv, s3)
-
-        # router <-> switches (creates r1-eth0/eth1/eth2)
-        self.addLink(r1, s1)   # r1-eth0 -> LAN A
-        self.addLink(r1, s2)   # r1-eth1 -> LAN B
-        self.addLink(r1, s3)   # r1-eth2 -> server LAN
-
-
 def run():
     setLogLevel('info')
-    topo = DnsTopo()
-    net = Mininet(topo=topo,
-                  controller=RemoteController('c0', ip='127.0.0.1', port=6653),
-                  link=TCLink, autoSetMacs=True)
+    standalone = os.environ.get('DNS_STANDALONE') == '1'
+
+    # ONOS 2.7 speaks OpenFlow 1.3; pin the switch to OF1.3 so the handshake
+    # succeeds and ONOS registers the device.
+    if standalone:
+        Switch = partial(OVSSwitch, failMode='standalone', protocols='OpenFlow13')
+    else:
+        Switch = partial(OVSSwitch, protocols='OpenFlow13')
+
+    net = Mininet(controller=None, switch=Switch, link=TCLink, autoSetMacs=True)
+
+    if not standalone:
+        net.addController('c0', controller=RemoteController,
+                          ip='127.0.0.1', port=6653)
+
+    s1 = net.addSwitch('s1')   # LAN A
+    s2 = net.addSwitch('s2')   # LAN B
+    s3 = net.addSwitch('s3')   # server LAN
+
+    r1 = net.addHost('r1', cls=Router, ip='0.0.0.0')
+
+    # LAN A (h3 is the attacker / MITM DNS proxy)
+    h1 = net.addHost('h1', ip='10.0.10.11/24', defaultRoute='via 10.0.10.1')
+    h2 = net.addHost('h2', ip='10.0.10.12/24', defaultRoute='via 10.0.10.1')
+    h3 = net.addHost('h3', ip='10.0.10.13/24', defaultRoute='via 10.0.10.1')
+    # LAN B
+    h4 = net.addHost('h4', ip='10.0.20.11/24', defaultRoute='via 10.0.20.1')
+    h5 = net.addHost('h5', ip='10.0.20.12/24', defaultRoute='via 10.0.20.1')
+    # server LAN (legit DNS)
+    srv = net.addHost('srv', ip='10.0.30.10/24', defaultRoute='via 10.0.30.1')
+
+    # host <-> switch links (order fixes s1 port numbers: h1=1 h2=2 h3=3 r1=4)
+    net.addLink(h1, s1)
+    net.addLink(h2, s1)
+    net.addLink(h3, s1)
+    net.addLink(h4, s2)
+    net.addLink(h5, s2)
+    net.addLink(srv, s3)
+
+    # router <-> switches (creates r1-eth0/eth1/eth2)
+    net.addLink(r1, s1)   # s1-eth4 -> LAN A gateway
+    net.addLink(r1, s2)   # LAN B gateway
+    net.addLink(r1, s3)   # server LAN gateway
+
     net.start()
 
-    # configure router interfaces
-    r1 = net.get('r1')
     r1.cmd('ifconfig r1-eth0 10.0.10.1/24')
     r1.cmd('ifconfig r1-eth1 10.0.20.1/24')
     r1.cmd('ifconfig r1-eth2 10.0.30.1/24')
     r1.cmd('sysctl -w net.ipv4.ip_forward=1')
 
-    # default route for each host via its gateway
-    for name in ['h1', 'h2', 'h3']:
-        net.get(name).cmd('ip route add default via 10.0.10.1')
-    for name in ['h4', 'h5']:
-        net.get(name).cmd('ip route add default via 10.0.20.1')
-    net.get('srv').cmd('ip route add default via 10.0.30.1')
+    # Discover the real port numbers + attacker MAC and hand them to the attack
+    # script, so the flows never contain hand-copied values.
+    p_h1 = s1.ports[h1.connectionsTo(s1)[0][1]]
+    p_h3 = s1.ports[h3.connectionsTo(s1)[0][1]]
+    p_r1 = s1.ports[r1.connectionsTo(s1)[0][1]]   # s1 port toward the router
+    h3_mac = h3.MAC('h3-eth0')
+    env = (
+        "# auto-generated by dns_topo.py -- source this in the attack script\n"
+        "SW=s1\n"
+        "P_H1=%s\n"
+        "P_H3=%s\n"
+        "P_R1=%s\n"
+        "H3_MAC=%s\n"
+        "VICTIM_IP=10.0.10.11\n"
+        "GATEWAY_IP=10.0.10.1\n"
+        "SERVER_IP=10.0.30.10\n"
+        "LEGIT_DNS=10.0.30.10\n"
+        "ROGUE_IP=10.0.10.13\n"
+        "LEGIT_ANSWER=10.0.30.80\n"
+        "ROGUE_ANSWER=10.6.6.66\n" % (p_h1, p_h3, p_r1, h3_mac)
+    )
+    with open('/tmp/dns_hijack_env.sh', 'w') as f:
+        f.write(env)
 
-    print("Topology started.")
-    print("LAN A: 10.0.10.0/24 (h1,h2,h3)")
-    print("LAN B: 10.0.20.0/24 (h4,h5)")
-    print("Server LAN: 10.0.30.0/24 (srv)")
+    mode = 'STANDALONE (no ONOS)' if standalone else 'ONOS @ 127.0.0.1:6653'
+    print("\n=== DNS-hijack testbed up | controller: %s ===" % mode)
+    print("LAN A 10.0.10.0/24  h1(.11 victim)  h2(.12)  h3(.13 ATTACKER)")
+    print("Srv   10.0.30.0/24  srv(.10 legit DNS)")
+    print("s1 ports -> h1=port%s  h3=port%s   h3 MAC=%s" % (p_h1, p_h3, h3_mac))
+    print("Wrote /tmp/dns_hijack_env.sh for the attack script.")
+    print("Next: run 'pingall' so every host is learned, then start the resolvers.\n")
+
     CLI(net)
     net.stop()
 
